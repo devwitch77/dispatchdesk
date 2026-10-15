@@ -181,6 +181,47 @@ def update_incident_status(incident_id, new_status):
 
 
 
+def get_handover_incidents():
+    """Return unresolved incidents for a shift handover report."""
+
+    with get_connection() as connection:
+        incidents = connection.execute(
+            """
+            SELECT
+                incidents.incident_id,
+                incidents.title,
+                incidents.description,
+                incidents.category,
+                incidents.priority,
+                incidents.location_label,
+                incidents.status,
+                incidents.created_at,
+                incidents.updated_at,
+                resources.display_name AS assigned_resource
+            FROM incidents
+            LEFT JOIN resources
+                ON incidents.assigned_resource_id =
+                   resources.resource_id
+            WHERE incidents.status IN (
+                'new',
+                'assigned',
+                'in_progress'
+            )
+            ORDER BY
+                CASE incidents.priority
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    WHEN 'low' THEN 4
+                END,
+                incidents.created_at ASC
+            """
+        ).fetchall()
+
+    return [dict(incident) for incident in incidents]
+
+
+
 if __name__ == "__main__":
     initialise_database()
     print(f"Database initialised at: {DATABASE_PATH}")

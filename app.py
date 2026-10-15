@@ -7,6 +7,7 @@ from database import (
     initialise_database,
     create_incident,
     update_incident_status,
+    get_handover_incidents,
 )
 
 
@@ -445,6 +446,95 @@ else:
 # --------------------------------------------------
 # Footer
 # --------------------------------------------------
+
+
+
+# --------------------------------------------------
+# Shift handover report
+# --------------------------------------------------
+
+st.divider()
+st.subheader("Shift handover report")
+
+st.write(
+    "Review outstanding incidents and export a report "
+    "for the incoming shift."
+)
+
+handover_records = get_handover_incidents()
+handover_df = pd.DataFrame(handover_records)
+
+if handover_df.empty:
+    st.success("No outstanding incidents. Handover is clear.")
+
+else:
+    # Summary metrics
+    critical_count = int(
+        (handover_df["priority"] == "critical").sum()
+    )
+    high_count = int(
+        (handover_df["priority"] == "high").sum()
+    )
+    in_progress_count = int(
+        (handover_df["status"] == "in_progress").sum()
+    )
+    unassigned_count = int(
+        handover_df["assigned_resource"].isna().sum()
+    )
+
+    st.markdown("### Handover summary")
+
+    metric1, metric2, metric3, metric4 = st.columns(4)
+
+    with metric1:
+        st.metric("Outstanding incidents", len(handover_df))
+
+    with metric2:
+        st.metric("Critical priority", critical_count)
+
+    with metric3:
+        st.metric("High priority", high_count)
+
+    with metric4:
+        st.metric("Unassigned incidents", unassigned_count)
+
+    st.info(
+        f"{in_progress_count} incident(s) are currently in progress."
+    )
+
+    # Prepare a readable report table.
+    report_df = handover_df.rename(
+        columns={
+            "incident_id": "Incident ID",
+            "title": "Title",
+            "description": "Description",
+            "category": "Category",
+            "priority": "Priority",
+            "location_label": "Location",
+            "status": "Status",
+            "created_at": "Created at (UTC)",
+            "updated_at": "Last updated (UTC)",
+            "assigned_resource": "Assigned resource",
+        }
+    )
+
+    st.dataframe(
+        report_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Download the report as a CSV file.
+    csv_data = report_df.to_csv(index=False).encode("utf-8-sig")
+
+    st.download_button(
+        label="Download handover report (CSV)",
+        data=csv_data,
+        file_name="dispatchdesk_handover_report.csv",
+        mime="text/csv",
+        type="primary",
+    )
+
 
 st.divider()
 st.caption("DispatchDesk · Development prototype")
