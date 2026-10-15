@@ -118,6 +118,69 @@ def create_incident(
         return cursor.lastrowid
 
 
+def update_incident_status(incident_id, new_status):
+    """Update an incident status and record the change in the audit log."""
+
+    allowed_statuses = {
+        "new",
+        "assigned",
+        "in_progress",
+        "resolved",
+        "cancelled",
+    }
+
+    if new_status not in allowed_statuses:
+        raise ValueError("Invalid incident status.")
+
+    with get_connection() as connection:
+        incident = connection.execute(
+            """
+            SELECT status
+            FROM incidents
+            WHERE incident_id = ?
+            """,
+            (incident_id,),
+        ).fetchone()
+
+        if incident is None:
+            raise ValueError("Incident not found.")
+
+        old_status = incident["status"]
+
+        if old_status == new_status:
+            return False
+
+        connection.execute(
+            """
+            UPDATE incidents
+            SET status = ?,
+                updated_at = CURRENT_TIMESTAMP,
+                resolved_at = CASE
+                    WHEN ? = 'resolved' THEN CURRENT_TIMESTAMP
+                    ELSE NULL
+                END
+            WHERE incident_id = ?
+            """,
+            (new_status, new_status, incident_id),
+        )
+
+        connection.execute(
+            """
+            INSERT INTO audit_events (
+                incident_id,
+                event_type,
+                old_value,
+                new_value
+            )
+            VALUES (?, 'status_changed', ?, ?)
+            """,
+            (incident_id, old_status, new_status),
+        )
+
+    return True
+
+
+
 if __name__ == "__main__":
     initialise_database()
     print(f"Database initialised at: {DATABASE_PATH}")

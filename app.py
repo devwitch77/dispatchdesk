@@ -6,6 +6,7 @@ from database import (
     get_connection,
     initialise_database,
     create_incident,
+    update_incident_status,
 )
 
 
@@ -172,6 +173,65 @@ with st.expander("＋ Create a new incident", expanded=False):
                     st.rerun()
                 except Exception as error:
                     st.error(f"Could not create incident: {error}")
+
+with st.expander("↻ Update incident status", expanded=False):
+    with get_connection() as connection:
+        status_options = connection.execute(
+            """
+            SELECT incident_id, title, status
+            FROM incidents
+            ORDER BY incident_id DESC
+            """
+        ).fetchall()
+
+    if not status_options:
+        st.info("Create an incident before updating its status.")
+    else:
+        incident_lookup = {
+            f"#{row['incident_id']} — {row['title']} [{row['status']}]":
+                row["incident_id"]
+            for row in status_options
+        }
+
+        with st.form("update_incident_status_form"):
+            selected_incident = st.selectbox(
+                "Select incident",
+                options=list(incident_lookup.keys()),
+            )
+
+            new_status = st.selectbox(
+                "New status",
+                [
+                    "new",
+                    "assigned",
+                    "in_progress",
+                    "resolved",
+                    "cancelled",
+                ],
+            )
+
+            update_submitted = st.form_submit_button(
+                "Update status",
+                type="primary",
+            )
+
+            if update_submitted:
+                try:
+                    changed = update_incident_status(
+                        incident_lookup[selected_incident],
+                        new_status,
+                    )
+
+                    if changed:
+                        st.success("Incident status updated.")
+                    else:
+                        st.info("The incident already has that status.")
+
+                    st.rerun()
+
+                except (ValueError, Exception) as error:
+                    st.error(f"Could not update incident: {error}")
+
 
 
 st.subheader("Incident register")
