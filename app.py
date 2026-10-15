@@ -2,13 +2,16 @@
 import streamlit as st
 import pandas as pd
 
+
 from database import (
     get_connection,
     initialise_database,
     create_incident,
     update_incident_status,
     get_handover_incidents,
+    assign_incident_resource,
 )
+
 
 
 # --------------------------------------------------
@@ -65,37 +68,47 @@ def load_dashboard_data():
         recent_incidents = connection.execute(
             """
             SELECT
-                incident_id,
-                title,
-                category,
-                priority,
-                location_label,
-                status,
-                created_at
+                incidents.incident_id,
+                incidents.title,
+                incidents.category,
+                incidents.priority,
+                incidents.location_label,
+                incidents.status,
+                incidents.created_at,
+                COALESCE(resources.display_name, 'Unassigned')
+                    AS assigned_resource
             FROM incidents
-            ORDER BY incident_id DESC
+            LEFT JOIN resources
+                ON resources.resource_id =
+                   incidents.assigned_resource_id
+            ORDER BY incidents.incident_id DESC
             LIMIT 10
             """
         ).fetchall()
 
         # Fetch the ten latest recorded audit events.
         recent_activity = connection.execute(
-            """
-            SELECT
-                audit_events.event_id,
-                audit_events.incident_id,
-                incidents.title,
-                audit_events.event_type,
-                audit_events.old_value,
-                audit_events.new_value,
-                audit_events.event_at
-            FROM audit_events
-            JOIN incidents
-                ON incidents.incident_id = audit_events.incident_id
-            ORDER BY audit_events.event_id DESC
-            LIMIT 10
-            """
-        ).fetchall()
+    """
+    SELECT
+        audit_events.event_id,
+        audit_events.incident_id,
+        incidents.title,
+        COALESCE(resources.display_name, 'Unassigned')
+            AS assigned_resource,
+        audit_events.event_type,
+        audit_events.old_value,
+        audit_events.new_value,
+        audit_events.event_at
+    FROM audit_events
+    JOIN incidents
+        ON incidents.incident_id = audit_events.incident_id
+    LEFT JOIN resources
+        ON resources.resource_id = incidents.assigned_resource_id
+    ORDER BY audit_events.event_id DESC
+    LIMIT 10
+    """
+    ).fetchall()
+
 
     incidents_df = pd.DataFrame(
         [dict(row) for row in recent_incidents]
@@ -275,7 +288,6 @@ with st.expander("↻ Update incident status", expanded=False):
                 "New status",
                 [
                     "new",
-                    "assigned",
                     "in_progress",
                     "resolved",
                     "cancelled",
@@ -311,6 +323,97 @@ with st.expander("↻ Update incident status", expanded=False):
                     st.error(
                         f"An unexpected error occurred: {error}"
                     )
+
+
+
+
+# --------------------------------------------------
+# Assign a resource to an incident
+# --------------------------------------------------
+
+with st.expander("👥 Assign a resource", expanded=False):
+    with get_connection() as connection:
+        assignable_incidents = connection.execute(
+            """
+            SELECT incident_id, title, status
+            FROM incidents
+            WHERE status NOT IN ('resolved', 'cancelled')
+            ORDER BY incident_id DESC
+            """
+        ).fetchall()
+
+        available_resources = connection.execute(
+            """
+            SELECT resource_id, display_name, resource_type
+            FROM resources
+            WHERE availability_status = 'available'
+            ORDER BY display_name
+            """
+        ).fetchall()
+
+    if not assignable_incidents:
+        st.info("There are no open incidents to assign.")
+
+    elif not available_resources:
+        st.warning(
+            "No resources are currently available. "
+            "Release or add a resource before assigning one."
+        )
+
+    else:
+        incident_lookup = {
+            f"#{row['incident_id']} — {row['title']} "
+            f"[{row['status']}]": row["incident_id"]
+            for row in assignable_incidents
+        }
+
+        resource_lookup = {
+            f"{row['display_name']} — {row['resource_type']}":
+                row["resource_id"]
+            for row in available_resources
+        }
+
+        with st.form("assign_resource_form"):
+            selected_incident = st.selectbox(
+                "Select an open incident",
+                options=list(incident_lookup.keys()),
+            )
+
+            selected_resource = st.selectbox(
+                "Select an available resource",
+                options=list(resource_lookup.keys()),
+            )
+
+            assignment_submitted = st.form_submit_button(
+                "Assign resource",
+                type="primary",
+            )
+
+            if assignment_submitted:
+                try:
+                    assigned = assign_incident_resource(
+                        incident_lookup[selected_incident],
+                        resource_lookup[selected_resource],
+                    )
+
+                    if assigned:
+                        st.success("Resource assigned successfully.")
+                        st.rerun()
+                    else:
+                        st.info(
+                            "This resource is already assigned "
+                            "to that incident."
+                        )
+
+                except ValueError as error:
+                    st.error(f"Assignment failed: {error}")
+
+                except Exception as error:
+                    st.error(
+                        f"An unexpected error occurred: {error}"
+                    )
+
+
 
 
 # --------------------------------------------------

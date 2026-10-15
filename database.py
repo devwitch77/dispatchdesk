@@ -123,7 +123,6 @@ def update_incident_status(incident_id, new_status):
 
     allowed_statuses = {
         "new",
-        "assigned",
         "in_progress",
         "resolved",
         "cancelled",
@@ -135,8 +134,8 @@ def update_incident_status(incident_id, new_status):
     with get_connection() as connection:
         incident = connection.execute(
             """
-            SELECT status
-            FROM incidents
+            SELECT status, assigned_resource_id
+	    FROM incidents
             WHERE incident_id = ?
             """,
             (incident_id,),
@@ -177,7 +176,181 @@ def update_incident_status(incident_id, new_status):
             (incident_id, old_status, new_status),
         )
 
+
+	        # Release the resource when an incident is closed.
+        if new_status in {"resolved", "cancelled"}:
+            resource_id = incident["assigned_resource_id"]
+
+            if resource_id is not None:
+                other_active_incidents = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM incidents
+                    WHERE assigned_resource_id = ?
+                      AND incident_id != ?
+                      AND status NOT IN ('resolved', 'cancelled')
+                    """,
+                    (resource_id, incident_id),
+                ).fetchone()[0]
+
+                if other_active_incidents == 0:
+                    connection.execute(
+                        """
+                        UPDATE resources
+                        SET availability_status = 'available'
+                        WHERE resource_id = ?
+                        """,
+                        (resource_id,),
+                    )
+
     return True
+
+
+
+
+def assign_incident_resource(incident_id, resource_id):
+    """Assign an available resource and record the assignment."""
+
+    with get_connection() as connection:
+        incident = connection.execute(
+            """
+            SELECT incident_id, status, assigned_resource_id
+            FROM incidents
+            WHERE incident_id = ?
+            """,
+            (incident_id,),
+        ).fetchone()
+
+        if incident is None:
+            raise ValueError("Incident not found.")
+
+        resource = connection.execute(
+            """
+            SELECT resource_id, display_name, availability_status
+            FROM resources
+            WHERE resource_id = ?
+            """,
+            (resource_id,),
+        ).fetchone()
+
+        if resource is None:
+            raise ValueError("Resource not found.")
+
+        if incident["status"] in ("resolved", "cancelled"):
+            raise ValueError(
+                "Cannot assign a resource to a closed incident."
+            )
+
+        old_resource_id = incident["assigned_resource_id"]
+
+        if old_resource_id == resource_id:
+            return False
+
+        if resource["availability_status"] != "available":
+            raise ValueError(
+                "This resource is not available. Choose another resource."
+            )
+
+        old_resource = None
+
+        if old_resource_id is not None:
+            old_resource = connection.execute(
+                """
+                SELECT display_name
+                FROM resources
+                WHERE resource_id = ?
+                """,
+                (old_resource_id,),
+            ).fetchone()
+
+        old_resource_name = (
+            old_resource["display_name"]
+            if old_resource
+            else "Unassigned"
+        )
+
+        old_status = incident["status"]
+        new_status = (
+            "assigned" if old_status == "new" else old_status
+        )
+
+        connection.execute(
+            """
+            UPDATE incidents
+            SET assigned_resource_id = ?,
+                status = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE incident_id = ?
+            """,
+            (resource_id, new_status, incident_id),
+        )
+
+        connection.execute(
+            """
+            UPDATE resources
+            SET availability_status = 'assigned'
+            WHERE resource_id = ?
+            """,
+            (resource_id,),
+        )
+
+        # Release the previous resource if nothing else uses it.
+        if old_resource_id is not None:
+            other_assignments = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM incidents
+                WHERE assigned_resource_id = ?
+                  AND incident_id != ?
+                  AND status NOT IN ('resolved', 'cancelled')
+                """,
+                (old_resource_id, incident_id),
+            ).fetchone()[0]
+
+            if other_assignments == 0:
+                connection.execute(
+                    """
+                    UPDATE resources
+                    SET availability_status = 'available'
+                    WHERE resource_id = ?
+                    """,
+                    (old_resource_id,),
+                )
+
+        connection.execute(
+            """
+            INSERT INTO audit_events (
+                incident_id,
+                event_type,
+                old_value,
+                new_value
+            )
+            VALUES (?, 'resource_assigned', ?, ?)
+            """,
+            (
+                incident_id,
+                old_resource_name,
+                resource["display_name"],
+            ),
+        )
+
+        # Record a status change separately if assignment changed it.
+        if old_status != new_status:
+            connection.execute(
+                """
+                INSERT INTO audit_events (
+                    incident_id,
+                    event_type,
+                    old_value,
+                    new_value
+                )
+                VALUES (?, 'status_changed', ?, ?)
+                """,
+                (incident_id, old_status, new_status),
+            )
+
+    return True
+
 
 
 
