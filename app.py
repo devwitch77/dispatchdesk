@@ -2,7 +2,11 @@
 import streamlit as st
 import pandas as pd
 
-from database import get_connection, initialise_database
+from database import (
+    get_connection,
+    initialise_database,
+    create_incident,
+)
 
 
 st.set_page_config(
@@ -98,6 +102,76 @@ with col3:
     st.metric("Resolved today", resolved_count)
 
 st.divider()
+
+
+with st.expander("＋ Create a new incident", expanded=False):
+    st.write("Enter the details of a fictional incident.")
+
+    with st.form("create_incident_form", clear_on_submit=True):
+        title = st.text_input(
+            "Incident title",
+            max_chars=120,
+        )
+
+        description = st.text_area(
+            "Description",
+            max_chars=1000,
+        )
+
+        form_col1, form_col2 = st.columns(2)
+
+        with form_col1:
+            category = st.selectbox(
+                "Category",
+                [
+                    "Traffic",
+                    "Infrastructure",
+                    "Public Assistance",
+                    "Public Safety",
+                    "Other",
+                ],
+            )
+
+            priority = st.selectbox(
+                "Priority",
+                ["low", "medium", "high", "critical"],
+                index=1,
+            )
+
+        with form_col2:
+            location_label = st.selectbox(
+                "Fictional location",
+                [
+                    "Demo Zone A",
+                    "Demo Zone B",
+                    "Demo Zone C",
+                    "Demo Zone D",
+                    "Demo Zone E",
+                    "Demo Zone F",
+                ],
+            )
+
+        submitted = st.form_submit_button(
+            "Create incident",
+            type="primary",
+        )
+
+        if submitted:
+            if not title.strip() or not description.strip():
+                st.error("Please enter both a title and a description.")
+            else:
+                try:
+                    new_id = create_incident(
+                        title=title,
+                        description=description,
+                        category=category,
+                        priority=priority,
+                        location_label=location_label,
+                    )
+                    st.success(f"Incident #{new_id} created successfully.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"Could not create incident: {error}")
 
 
 st.subheader("Incident register")

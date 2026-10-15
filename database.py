@@ -85,6 +85,38 @@ def initialise_database():
             """
         )
 
+def create_incident(
+    title,
+    description,
+    category,
+    priority,
+    location_label,
+):
+    """Create a new incident and return its generated ID."""
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO incidents (
+                title,
+                description,
+                category,
+                priority,
+                location_label
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                title.strip(),
+                description.strip(),
+                category,
+                priority,
+                location_label.strip(),
+            ),
+        )
+
+        return cursor.lastrowid
+
 
 if __name__ == "__main__":
     initialise_database()
