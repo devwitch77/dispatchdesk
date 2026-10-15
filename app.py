@@ -10,19 +10,29 @@ from database import (
 )
 
 
+# --------------------------------------------------
+# Page configuration
+# --------------------------------------------------
+
 st.set_page_config(
     page_title="DispatchDesk",
     page_icon="📋",
     layout="wide",
 )
 
-# Make sure the database tables exist before querying them.
+# Ensure the database tables exist before querying them.
 initialise_database()
 
 
+# --------------------------------------------------
+# Data loading
+# --------------------------------------------------
+
 def load_dashboard_data():
-    """Load summary metrics and recent incidents from SQLite."""
+    """Load dashboard metrics, incidents, and recent activity."""
+
     with get_connection() as connection:
+        # Count incidents that are not yet closed.
         open_incidents = connection.execute(
             """
             SELECT COUNT(*)
@@ -31,6 +41,7 @@ def load_dashboard_data():
             """
         ).fetchone()[0]
 
+        # Count resources currently marked as assigned.
         assigned_resources = connection.execute(
             """
             SELECT COUNT(*)
@@ -39,6 +50,7 @@ def load_dashboard_data():
             """
         ).fetchone()[0]
 
+        # Count incidents resolved today.
         resolved_today = connection.execute(
             """
             SELECT COUNT(*)
@@ -48,6 +60,7 @@ def load_dashboard_data():
             """
         ).fetchone()[0]
 
+        # Fetch the ten most recently created incidents.
         recent_incidents = connection.execute(
             """
             SELECT
@@ -64,8 +77,31 @@ def load_dashboard_data():
             """
         ).fetchall()
 
+        # Fetch the ten latest recorded audit events.
+        recent_activity = connection.execute(
+            """
+            SELECT
+                audit_events.event_id,
+                audit_events.incident_id,
+                incidents.title,
+                audit_events.event_type,
+                audit_events.old_value,
+                audit_events.new_value,
+                audit_events.event_at
+            FROM audit_events
+            JOIN incidents
+                ON incidents.incident_id = audit_events.incident_id
+            ORDER BY audit_events.event_id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
     incidents_df = pd.DataFrame(
         [dict(row) for row in recent_incidents]
+    )
+
+    activity_df = pd.DataFrame(
+        [dict(row) for row in recent_activity]
     )
 
     return (
@@ -73,13 +109,22 @@ def load_dashboard_data():
         assigned_resources,
         resolved_today,
         incidents_df,
+        activity_df,
     )
 
 
-open_count, assigned_count, resolved_count, incidents_df = (
-    load_dashboard_data()
-)
+(
+    open_count,
+    assigned_count,
+    resolved_count,
+    incidents_df,
+    activity_df,
+) = load_dashboard_data()
 
+
+# --------------------------------------------------
+# Dashboard header
+# --------------------------------------------------
 
 st.title("DispatchDesk")
 st.caption("Incident Coordination & Operations Dashboard")
@@ -88,6 +133,11 @@ st.info(
     "Prototype environment ready. "
     "All operational data is fictional."
 )
+
+
+# --------------------------------------------------
+# Summary metrics
+# --------------------------------------------------
 
 st.subheader("System overview")
 
@@ -104,6 +154,10 @@ with col3:
 
 st.divider()
 
+
+# --------------------------------------------------
+# Create an incident
+# --------------------------------------------------
 
 with st.expander("＋ Create a new incident", expanded=False):
     st.write("Enter the details of a fictional incident.")
@@ -159,7 +213,9 @@ with st.expander("＋ Create a new incident", expanded=False):
 
         if submitted:
             if not title.strip() or not description.strip():
-                st.error("Please enter both a title and a description.")
+                st.error(
+                    "Please enter both a title and a description."
+                )
             else:
                 try:
                     new_id = create_incident(
@@ -169,10 +225,21 @@ with st.expander("＋ Create a new incident", expanded=False):
                         priority=priority,
                         location_label=location_label,
                     )
-                    st.success(f"Incident #{new_id} created successfully.")
+
+                    st.success(
+                        f"Incident #{new_id} created successfully."
+                    )
                     st.rerun()
+
                 except Exception as error:
-                    st.error(f"Could not create incident: {error}")
+                    st.error(
+                        f"Could not create incident: {error}"
+                    )
+
+
+# --------------------------------------------------
+# Update incident status
+# --------------------------------------------------
 
 with st.expander("↻ Update incident status", expanded=False):
     with get_connection() as connection:
@@ -185,10 +252,14 @@ with st.expander("↻ Update incident status", expanded=False):
         ).fetchall()
 
     if not status_options:
-        st.info("Create an incident before updating its status.")
+        st.info(
+            "Create an incident before updating its status."
+        )
+
     else:
         incident_lookup = {
-            f"#{row['incident_id']} — {row['title']} [{row['status']}]":
+            f"#{row['incident_id']} — "
+            f"{row['title']} [{row['status']}]":
                 row["incident_id"]
             for row in status_options
         }
@@ -224,23 +295,37 @@ with st.expander("↻ Update incident status", expanded=False):
 
                     if changed:
                         st.success("Incident status updated.")
+                        st.rerun()
                     else:
-                        st.info("The incident already has that status.")
+                        st.info(
+                            "The incident already has that status."
+                        )
 
-                    st.rerun()
+                except ValueError as error:
+                    st.error(
+                        f"Could not update incident: {error}"
+                    )
 
-                except (ValueError, Exception) as error:
-                    st.error(f"Could not update incident: {error}")
+                except Exception as error:
+                    st.error(
+                        f"An unexpected error occurred: {error}"
+                    )
 
 
+# --------------------------------------------------
+# Incident register, search, and filters
+# --------------------------------------------------
 
+st.divider()
 st.subheader("Incident register")
 
 if incidents_df.empty:
     st.info("No incidents have been recorded yet.")
+
 else:
-    # Search and filter controls
-    search_col, priority_col, status_col = st.columns([2, 1, 1])
+    search_col, priority_col, status_col = st.columns(
+        [2, 1, 1]
+    )
 
     with search_col:
         search_text = st.text_input(
@@ -267,32 +352,45 @@ else:
             ],
         )
 
-    # Start with all records, then narrow the displayed results.
+    # Work on a copy so the original data remains unchanged.
     filtered_df = incidents_df.copy()
 
     if search_text:
         search_mask = (
             filtered_df["title"].str.contains(
-                search_text, case=False, na=False
+                search_text,
+                case=False,
+                na=False,
             )
             | filtered_df["location_label"].str.contains(
-                search_text, case=False, na=False
+                search_text,
+                case=False,
+                na=False,
             )
         )
+
         filtered_df = filtered_df[search_mask]
 
     if selected_priority != "All":
         filtered_df = filtered_df[
-            filtered_df["priority"] == selected_priority.lower()
+            filtered_df["priority"]
+            == selected_priority.lower()
         ]
 
     if selected_status != "All":
-        status_value = selected_status.lower().replace(" ", "_")
+        status_value = selected_status.lower().replace(
+            " ",
+            "_",
+        )
+
         filtered_df = filtered_df[
             filtered_df["status"] == status_value
         ]
 
-    st.caption(f"Showing {len(filtered_df)} of {len(incidents_df)} incidents")
+    st.caption(
+        f"Showing {len(filtered_df)} of "
+        f"{len(incidents_df)} incidents"
+    )
 
     st.dataframe(
         filtered_df,
@@ -300,4 +398,53 @@ else:
         hide_index=True,
     )
 
+
+# --------------------------------------------------
+# Recent activity / audit trail
+# --------------------------------------------------
+
+st.divider()
+st.subheader("Recent activity")
+st.caption(
+    "Latest status changes recorded in the fictional demo database."
+)
+
+if activity_df.empty:
+    st.info("No activity has been recorded yet.")
+
+else:
+    # Make event names easier to read.
+    display_activity = activity_df.copy()
+
+    display_activity["event_type"] = (
+        display_activity["event_type"]
+        .str.replace("_", " ")
+        .str.title()
+    )
+
+    display_activity = display_activity.rename(
+        columns={
+            "event_id": "Event ID",
+            "incident_id": "Incident ID",
+            "title": "Incident",
+            "event_type": "Event",
+            "old_value": "Previous status",
+            "new_value": "New status",
+            "event_at": "Recorded at (UTC)",
+        }
+    )
+
+    # Present the newest activity first.
+    st.dataframe(
+        display_activity,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# --------------------------------------------------
+# Footer
+# --------------------------------------------------
+
+st.divider()
 st.caption("DispatchDesk · Development prototype")
