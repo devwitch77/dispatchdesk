@@ -32,103 +32,100 @@ initialise_database()
 # Data loading
 # --------------------------------------------------
 
-def load_dashboard_data():
-    """Load dashboard metrics, incidents, and recent activity."""
 
+
+def load_dashboard_data():
     with get_connection() as connection:
-        # Count incidents that are not yet closed.
         open_incidents = connection.execute(
             """
-            SELECT COUNT(*)
-            FROM incidents
+            SELECT COUNT(*) FROM incidents
             WHERE status IN ('new', 'assigned', 'in_progress')
             """
         ).fetchone()[0]
 
-        # Count resources currently marked as assigned.
         assigned_resources = connection.execute(
             """
-            SELECT COUNT(*)
-            FROM resources
+            SELECT COUNT(*) FROM resources
             WHERE availability_status = 'assigned'
             """
         ).fetchone()[0]
 
-        # Count incidents resolved today.
         resolved_today = connection.execute(
             """
-            SELECT COUNT(*)
-            FROM incidents
+            SELECT COUNT(*) FROM incidents
             WHERE status = 'resolved'
-              AND date(resolved_at) = date('now')
+              AND date(resolved_at) = date('now', 'localtime')
             """
         ).fetchone()[0]
 
-        # Fetch the ten most recently created incidents.
-        recent_incidents = connection.execute(
+        priority_counts = connection.execute(
             """
-            SELECT
-                incidents.incident_id,
-                incidents.title,
-                incidents.category,
-                incidents.priority,
-                incidents.location_label,
-                incidents.status,
-                incidents.created_at,
-                COALESCE(resources.display_name, 'Unassigned')
-                    AS assigned_resource
+            SELECT priority, COUNT(*) AS incident_count
             FROM incidents
-            LEFT JOIN resources
-                ON resources.resource_id =
-                   incidents.assigned_resource_id
-            ORDER BY incidents.incident_id DESC
-            LIMIT 10
+            GROUP BY priority
             """
         ).fetchall()
 
+        status_counts = connection.execute(
+            """
+            SELECT status, COUNT(*) AS incident_count
+            FROM incidents
+            GROUP BY status
+            """
+        ).fetchall()
 
-        # Fetch the ten latest recorded audit events.
-        recent_activity = connection.execute(
+        
+        incidents = connection.execute(
             """
             SELECT
-                audit_events.event_id,
-                audit_events.incident_id,
-                incidents.title,
-                CASE
-                    WHEN audit_events.event_type IN (
-                        'resource_assigned',
-                        'resource_released'
-                    )
-                    THEN audit_events.new_value
-                    ELSE COALESCE(
-                        resources.display_name,
-                        'Unassigned'
-                    )
-                END AS assigned_resource,
-                audit_events.event_type,
-                audit_events.old_value,
-                audit_events.new_value,
-                audit_events.event_at
-            FROM audit_events
-            JOIN incidents
-                ON incidents.incident_id = audit_events.incident_id
-            LEFT JOIN resources
-                ON resources.resource_id =
-                   incidents.assigned_resource_id
-            ORDER BY audit_events.event_id DESC
+                incident_id,
+                title,
+                category,
+                priority,
+                status,
+                location_label,
+                assigned_resource_id,
+                created_at,
+                ROUND(
+                    (julianday('now') - julianday(created_at)) * 24,
+                    1
+                ) AS age_hours
+            FROM incidents
+            ORDER BY created_at DESC
             LIMIT 10
             """
         ).fetchall()
 
 
+        activity = connection.execute(
+            """
+            SELECT audit_events.event_id,
+                   audit_events.incident_id,
+                   audit_events.event_type,
+                   audit_events.old_value,
+                   audit_events.new_value,
+                   audit_events.event_at,
+                   CASE
+                       WHEN audit_events.event_type IN (
+                           'resource_assigned', 'resource_released'
+                       )
+                       THEN audit_events.new_value
+                       ELSE COALESCE(resources.display_name, 'Unassigned')
+                   END AS assigned_resource
+            FROM audit_events
+            LEFT JOIN incidents
+                ON audit_events.incident_id = incidents.incident_id
+            LEFT JOIN resources
+                ON incidents.assigned_resource_id = resources.resource_id
+            ORDER BY audit_events.event_at DESC, audit_events.event_id DESC
+            LIMIT 10
+            """
+        ).fetchall()
 
-    incidents_df = pd.DataFrame(
-        [dict(row) for row in recent_incidents]
-    )
-
-    activity_df = pd.DataFrame(
-        [dict(row) for row in recent_activity]
-    )
+    incidents_df = pd.DataFrame([dict(row) for row in incidents])
+    activity_df = pd.DataFrame([dict(row) for row in activity])
+    priority_df = pd.DataFrame([dict(row) for row in priority_counts])
+    status_df = pd.DataFrame([dict(row) for row in status_counts])
 
     return (
         open_incidents,
@@ -136,8 +133,9 @@ def load_dashboard_data():
         resolved_today,
         incidents_df,
         activity_df,
+        priority_df,
+        status_df,
     )
-
 
 (
     open_count,
@@ -145,7 +143,10 @@ def load_dashboard_data():
     resolved_count,
     incidents_df,
     activity_df,
+    priority_df,
+    status_df,
 ) = load_dashboard_data()
+
 
 
 # --------------------------------------------------
@@ -179,6 +180,31 @@ with col3:
     st.metric("Resolved today", resolved_count)
 
 st.divider()
+
+
+# Operational analytics
+st.header("Operational Analytics")
+
+chart_col1, chart_col2 = st.columns(2)
+
+with chart_col1:
+    st.subheader("Incidents by Priority")
+
+    if not priority_df.empty:
+        priority_chart = priority_df.set_index("priority")
+        st.bar_chart(priority_chart["incident_count"])
+    else:
+        st.info("No incident data available yet.")
+
+with chart_col2:
+    st.subheader("Incidents by Status")
+
+    if not status_df.empty:
+        status_chart = status_df.set_index("status")
+        st.bar_chart(status_chart["incident_count"])
+    else:
+        st.info("No incident data available yet.")
+
 
 
 # --------------------------------------------------
@@ -428,6 +454,7 @@ with st.expander("👥 Assign a resource", expanded=False):
 
 
 
+
 # --------------------------------------------------
 # Incident register, search, and filters
 # --------------------------------------------------
@@ -477,11 +504,13 @@ else:
                 search_text,
                 case=False,
                 na=False,
+                regex=False,
             )
             | filtered_df["location_label"].str.contains(
                 search_text,
                 case=False,
                 na=False,
+                regex=False,
             )
         )
 
@@ -508,11 +537,37 @@ else:
         f"{len(incidents_df)} incidents"
     )
 
+
+    # Convert incident age into a readable label and demo indicator.
+    if "age_hours" in filtered_df.columns:
+        filtered_df["Age"] = filtered_df["age_hours"].apply(
+            lambda hours: (
+                f"{hours / 24:.1f} days"
+                if hours >= 24
+                else f"{hours:.1f} hours"
+            )
+        )
+
+        filtered_df["Status"] = filtered_df["age_hours"].apply(
+            lambda hours: (
+                "🔴 Long open"
+                if hours >= 4
+                else "🟡 Aging"
+                if hours >= 1
+                else "🟢 Recent"
+            )
+        )
+
+        # Remove the raw numeric age from the displayed table.
+        filtered_df = filtered_df.drop(columns=["age_hours"])
+
+
     st.dataframe(
         filtered_df,
         use_container_width=True,
         hide_index=True,
     )
+
 
 
 # --------------------------------------------------
