@@ -86,28 +86,40 @@ def load_dashboard_data():
             """
         ).fetchall()
 
+
         # Fetch the ten latest recorded audit events.
         recent_activity = connection.execute(
-    """
-    SELECT
-        audit_events.event_id,
-        audit_events.incident_id,
-        incidents.title,
-        COALESCE(resources.display_name, 'Unassigned')
-            AS assigned_resource,
-        audit_events.event_type,
-        audit_events.old_value,
-        audit_events.new_value,
-        audit_events.event_at
-    FROM audit_events
-    JOIN incidents
-        ON incidents.incident_id = audit_events.incident_id
-    LEFT JOIN resources
-        ON resources.resource_id = incidents.assigned_resource_id
-    ORDER BY audit_events.event_id DESC
-    LIMIT 10
-    """
-    ).fetchall()
+            """
+            SELECT
+                audit_events.event_id,
+                audit_events.incident_id,
+                incidents.title,
+                CASE
+                    WHEN audit_events.event_type IN (
+                        'resource_assigned',
+                        'resource_released'
+                    )
+                    THEN audit_events.new_value
+                    ELSE COALESCE(
+                        resources.display_name,
+                        'Unassigned'
+                    )
+                END AS assigned_resource,
+                audit_events.event_type,
+                audit_events.old_value,
+                audit_events.new_value,
+                audit_events.event_at
+            FROM audit_events
+            JOIN incidents
+                ON incidents.incident_id = audit_events.incident_id
+            LEFT JOIN resources
+                ON resources.resource_id =
+                   incidents.assigned_resource_id
+            ORDER BY audit_events.event_id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
 
 
     incidents_df = pd.DataFrame(

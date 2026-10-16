@@ -118,8 +118,9 @@ def create_incident(
         return cursor.lastrowid
 
 
+
 def update_incident_status(incident_id, new_status):
-    """Update an incident status and record the change in the audit log."""
+    """Update an incident status and safely release its resource when closed."""
 
     allowed_statuses = {
         "new",
@@ -135,7 +136,7 @@ def update_incident_status(incident_id, new_status):
         incident = connection.execute(
             """
             SELECT status, assigned_resource_id
-	    FROM incidents
+            FROM incidents
             WHERE incident_id = ?
             """,
             (incident_id,),
@@ -149,10 +150,23 @@ def update_incident_status(incident_id, new_status):
         if old_status == new_status:
             return False
 
+        # Closed incidents cannot be reopened through this workflow.
+        if old_status in {"resolved", "cancelled"}:
+            raise ValueError(
+                "This incident is closed and cannot be reopened."
+            )
+
+        resource_id = incident["assigned_resource_id"]
+
+        # Update the incident and clear its assignment if it is closing.
         connection.execute(
             """
             UPDATE incidents
             SET status = ?,
+                assigned_resource_id = CASE
+                    WHEN ? IN ('resolved', 'cancelled') THEN NULL
+                    ELSE assigned_resource_id
+                END,
                 updated_at = CURRENT_TIMESTAMP,
                 resolved_at = CASE
                     WHEN ? = 'resolved' THEN CURRENT_TIMESTAMP
@@ -160,7 +174,7 @@ def update_incident_status(incident_id, new_status):
                 END
             WHERE incident_id = ?
             """,
-            (new_status, new_status, incident_id),
+            (new_status, new_status, new_status, incident_id),
         )
 
         connection.execute(
@@ -176,12 +190,35 @@ def update_incident_status(incident_id, new_status):
             (incident_id, old_status, new_status),
         )
 
-
-	        # Release the resource when an incident is closed.
+        # Release the resource when an incident is closed.
         if new_status in {"resolved", "cancelled"}:
-            resource_id = incident["assigned_resource_id"]
-
             if resource_id is not None:
+                resource = connection.execute(
+                    """
+                    SELECT display_name
+                    FROM resources
+                    WHERE resource_id = ?
+                    """,
+                    (resource_id,),
+                ).fetchone()
+
+                connection.execute(
+                    """
+                    INSERT INTO audit_events (
+                        incident_id,
+                        event_type,
+                        old_value,
+                        new_value
+                    )
+                    VALUES (?, 'resource_released', ?, ?)
+                    """,
+                    (
+                        incident_id,
+                        resource["display_name"] if resource else "Unknown",
+                        "Unassigned",
+                    ),
+                )
+
                 other_active_incidents = connection.execute(
                     """
                     SELECT COUNT(*)
@@ -204,6 +241,7 @@ def update_incident_status(incident_id, new_status):
                     )
 
     return True
+
 
 
 
