@@ -37,6 +37,21 @@ ABU_DHABI_LOCATIONS = [
         "latitude": 24.4941,
         "longitude": 54.4079,
     },
+
+    
+    {
+        "location_label": "Al Khalidiyah",
+        "area": "Al Khalidiyah",
+        "latitude": 24.4695,
+        "longitude": 54.3548,
+    },
+    {
+        "location_label": "Al Zahiyah",
+        "area": "Al Zahiyah",
+        "latitude": 24.5005,
+        "longitude": 54.3725,
+    },
+
 ]
 
 
@@ -255,6 +270,97 @@ def initialise_database():
                     location["longitude"],
                 ),
             )
+
+
+        # Migrate legacy demonstration fleet units in place.
+        # Resource IDs, availability, and incident assignments are preserved.
+        legacy_units = [
+            {
+                "old_name": "Team Alpha",
+                "new_code": "AD-RESPONSE-01",
+                "resource_type": "Response Vehicle",
+                "latitude": 24.4678,
+                "longitude": 54.3560,
+            },
+            {
+                "old_name": "Team Bravo",
+                "new_code": "AD-RESPONSE-02",
+                "resource_type": "Response Vehicle",
+                "latitude": 24.5000,
+                "longitude": 54.3750,
+            },
+            {
+                "old_name": "Support Unit 1",
+                "new_code": "AD-SUPPORT-02",
+                "resource_type": "Support Vehicle",
+                "latitude": 24.4770,
+                "longitude": 54.3600,
+            },
+            {
+                "old_name": "Support Unit 2",
+                "new_code": "AD-SUPPORT-03",
+                "resource_type": "Support Vehicle",
+                "latitude": 24.4890,
+                "longitude": 54.3900,
+            },
+        ]
+
+        for unit in legacy_units:
+            connection.execute(
+                """
+                UPDATE resources
+                SET display_name = ?,
+                    unit_code = ?,
+                    resource_type = ?,
+                    latitude = ?,
+                    longitude = ?
+                WHERE display_name = ?
+                """,
+                (
+                    unit["new_code"],
+                    unit["new_code"],
+                    unit["resource_type"],
+                    unit["latitude"],
+                    unit["longitude"],
+                    unit["old_name"],
+                ),
+            )
+
+        # Map legacy placeholder zones to curated Abu Dhabi locations.
+        legacy_location_mapping = {
+            "Demo Zone A": "Abu Dhabi Corniche",
+            "Demo Zone B": "Al Hisn",
+            "Demo Zone C": "Al Khalidiyah",
+            "Demo Zone D": "Al Zahiyah",
+            "Demo Zone E": "Al Reem Island",
+            "Demo Zone F": "Abu Dhabi Corniche",
+        }
+
+        for old_label, new_label in legacy_location_mapping.items():
+            connection.execute(
+                """
+                UPDATE incidents
+                SET location_label = ?,
+                    latitude = (
+                        SELECT latitude
+                        FROM locations
+                        WHERE location_label = ?
+                    ),
+                    longitude = (
+                        SELECT longitude
+                        FROM locations
+                        WHERE location_label = ?
+                    )
+                WHERE location_label = ?
+                """,
+                (
+                    new_label,
+                    new_label,
+                    new_label,
+                    old_label,
+                ),
+            )
+
 
         # Add the fictional units only when their unit codes are new.
         for unit in SIMULATED_UNITS:
