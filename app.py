@@ -345,6 +345,10 @@ if not map_incidents.empty:
                 "latitude": float(group["latitude"].mean()),
                 "longitude": float(group["longitude"].mean()),
                 "incident_count": incident_count,
+                "incident_ids": ",".join(
+                    str(value)
+                    for value in group["incident_id"].tolist()
+                ),
                 "marker_color": marker_color,
                 "marker_radius": min(
                     150 + (incident_count - 1) * 35,
@@ -484,9 +488,12 @@ tooltip = {
     },
 }
 
+
 # --------------------------------------------------
 # Render map
 # --------------------------------------------------
+
+map_event = None
 
 if layers:
     deck = pdk.Deck(
@@ -505,15 +512,113 @@ if layers:
         tooltip=tooltip,
     )
 
-    st.pydeck_chart(
+    map_event = st.pydeck_chart(
         deck,
         use_container_width=True,
         height=600,
+        on_select="rerun",
+        selection_mode="single-object",
+        key="abu_dhabi_operations_map",
     )
+
 else:
     st.info(
         "No incidents or simulated vehicles with valid coordinates."
     )
+
+
+
+
+# --------------------------------------------------
+# Display details for the selected map object
+# --------------------------------------------------
+
+if map_event is not None:
+    selection_objects = map_event.selection.get("objects", {})
+
+    selected_clusters = selection_objects.get(
+        "incident-clusters", []
+    )
+    selected_units = selection_objects.get(
+        "simulated-fleet", []
+    )
+
+    if selected_clusters:
+        selected_cluster = selected_clusters[0]
+
+        raw_ids = str(selected_cluster.get("incident_ids", ""))
+        selected_ids = [
+            int(value)
+            for value in raw_ids.split(",")
+            if value.strip().isdigit()
+        ]
+
+        selected_incidents = map_incidents[
+            map_incidents["incident_id"].isin(selected_ids)
+        ].copy()
+
+        st.subheader("Selected incident cluster")
+        st.caption(
+            selected_cluster.get("map_title", "Incident cluster")
+        )
+
+        detail_columns = [
+            column
+            for column in [
+                "incident_id",
+                "title",
+                "category",
+                "priority",
+                "status",
+                "location_label",
+                "description",
+            ]
+            if column in selected_incidents.columns
+        ]
+
+        if not selected_incidents.empty:
+            st.dataframe(
+                selected_incidents[detail_columns],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info(
+                "No individual incidents were found for this selection."
+            )
+
+    elif selected_units:
+        selected_unit = selected_units[0]
+
+        st.subheader("Selected fleet unit")
+
+        st.markdown(
+            f"**{selected_unit.get('unit_code', 'Unknown unit')} — "
+            f"{selected_unit.get('display_name', 'Unnamed vehicle')}**"
+        )
+
+        st.write(
+            f"**Type:** "
+            f"{selected_unit.get('resource_type', 'Unknown')}"
+        )
+        st.write(
+            f"**Availability:** "
+            f"{selected_unit.get('availability_status', 'Unknown')}"
+        )
+
+        latitude = selected_unit.get("latitude")
+        longitude = selected_unit.get("longitude")
+
+        if latitude is not None and longitude is not None:
+            st.write(
+                f"**Simulated coordinates:** "
+                f"{float(latitude):.5f}, {float(longitude):.5f}"
+            )
+
+        st.caption(
+            "This is simulated fleet data, not live vehicle tracking."
+        )
+
 
 # --------------------------------------------------
 # Map legend and counts
