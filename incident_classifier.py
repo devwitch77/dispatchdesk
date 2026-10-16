@@ -1,7 +1,7 @@
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline
 
 
 CATEGORIES = [
@@ -11,11 +11,13 @@ CATEGORIES = [
     "Public Safety",
 ]
 
-# Initial prototype threshold, not a calibrated probability.
+# Prototype review threshold only.
+# Logistic regression scores are NOT calibrated probabilities.
 REVIEW_SCORE_THRESHOLD = 0.45
 
 
-# Fictional development data only: 12 examples per category.
+# Fictional development data only.
+# Keep evaluation examples separate from this training data.
 TRAINING_DATA = [
     # Traffic
     ("A car has broken down in the middle of the road", "Traffic"),
@@ -30,6 +32,10 @@ TRAINING_DATA = [
     ("A lorry has stopped and is blocking a traffic lane", "Traffic"),
     ("Vehicles are queuing because of a minor road collision", "Traffic"),
     ("Heavy congestion is affecting the road outside the station", "Traffic"),
+    ("A car collision has blocked a lane near Al Hisn", "Traffic"),
+    ("Several vehicles are stuck in traffic near Al Reem Island", "Traffic"),
+    ("A broken-down taxi is causing delays on the Corniche", "Traffic"),
+    ("A vehicle has stalled near Al Zahiyah and traffic is building up", "Traffic"),
 
     # Infrastructure
     ("A streetlight has stopped working", "Infrastructure"),
@@ -44,6 +50,10 @@ TRAINING_DATA = [
     ("A damaged road sign needs to be repaired", "Infrastructure"),
     ("A utility cabinet has been damaged beside the road", "Infrastructure"),
     ("The public water supply has stopped in this block", "Infrastructure"),
+    ("A streetlight is not working near Al Khalidiyah", "Infrastructure"),
+    ("A damaged pavement needs repair on Al Reem Island", "Infrastructure"),
+    ("Water is leaking from a pipe near Al Hisn", "Infrastructure"),
+    ("A road sign has fallen near the Abu Dhabi Corniche", "Infrastructure"),
 
     # Public Safety
     ("Smoke is coming from a building", "Public Safety"),
@@ -58,6 +68,10 @@ TRAINING_DATA = [
     ("People report smoke coming from a warehouse", "Public Safety"),
     ("A violent altercation has started outside a shop", "Public Safety"),
     ("A possible gas leak has been reported indoors", "Public Safety"),
+    ("Smoke is coming from a building near Al Zahiyah", "Public Safety"),
+    ("A person is threatening members of the public near Al Hisn", "Public Safety"),
+    ("A suspicious unattended package was found on Al Reem Island", "Public Safety"),
+    ("People report a possible fire near the Abu Dhabi Corniche", "Public Safety"),
 
     # Public Assistance
     ("An elderly person needs help getting home", "Public Assistance"),
@@ -72,52 +86,79 @@ TRAINING_DATA = [
     ("Someone needs assistance finding a community centre", "Public Assistance"),
     ("A member of the public is asking about service opening hours", "Public Assistance"),
     ("A resident needs guidance on a routine administrative matter", "Public Assistance"),
+    ("A visitor is lost near Al Hisn and needs directions", "Public Assistance"),
+    ("A resident needs help finding a public service on Al Reem Island", "Public Assistance"),
+    ("A tourist needs directions near the Abu Dhabi Corniche", "Public Assistance"),
+    ("Someone needs information about a government service in Al Zahiyah", "Public Assistance"),
 ]
 
 
-# Keep these examples separate from training.
-# They must not be added to TRAINING_DATA.
+# Held-out evaluation examples.
+# Do not add these examples to TRAINING_DATA.
 EVALUATION_DATA = [
     # Traffic
     ("Vehicles are barely moving due to a queue on the highway", "Traffic"),
     ("A broken-down van is holding up traffic", "Traffic"),
     ("A collision has caused a backup at the roundabout", "Traffic"),
     ("Cars are stuck in a long line approaching the bridge", "Traffic"),
+    ("car collison at Al Hisn", "Traffic"),
+    ("A stalled vehicle is causing delays near Al Reem Island", "Traffic"),
 
     # Infrastructure
     ("A burst main is sending water across the sidewalk", "Infrastructure"),
     ("The lamp beside the pedestrian crossing is out", "Infrastructure"),
     ("A deep hole has appeared in the road surface", "Infrastructure"),
     ("Power has failed across several nearby buildings", "Infrastructure"),
+    ("street light not working near Al Reem Island", "Infrastructure"),
+    ("A water pipe is leaking near Al Zahiyah", "Infrastructure"),
 
     # Public Safety
     ("Flames and thick smoke are visible at a warehouse", "Public Safety"),
     ("A person is threatening people outside a supermarket", "Public Safety"),
     ("A suspicious package has been left unattended in a lobby", "Public Safety"),
     ("Building occupants report a possible gas leak", "Public Safety"),
+    ("Smoke is coming from a building near Al Hisn", "Public Safety"),
+    ("A fight has broken out in a public area", "Public Safety"),
 
     # Public Assistance
     ("A visitor cannot find the correct government department", "Public Assistance"),
     ("Someone needs directions to a nearby community facility", "Public Assistance"),
     ("A resident is asking how to access a routine municipal service", "Public Assistance"),
     ("A person needs help locating a public information counter", "Public Assistance"),
+    ("tourist is lost near the Corniche and needs directions", "Public Assistance"),
+    ("Someone needs information about local public services", "Public Assistance"),
 ]
 
 
 def build_classifier():
-    """Train the text classifier on fictional training examples."""
+    """Train the classifier using fictional training examples only."""
     texts = [text for text, label in TRAINING_DATA]
     labels = [label for text, label in TRAINING_DATA]
 
-    model = Pipeline([
+    features = FeatureUnion([
         (
-            "tfidf",
+            "word_features",
             TfidfVectorizer(
                 lowercase=True,
                 ngram_range=(1, 2),
                 strip_accents="unicode",
+                sublinear_tf=True,
             ),
         ),
+        (
+            "character_features",
+            TfidfVectorizer(
+                analyzer="char_wb",
+                ngram_range=(3, 5),
+                lowercase=True,
+                strip_accents="unicode",
+                sublinear_tf=True,
+            ),
+        ),
+    ])
+
+    model = Pipeline([
+        ("features", features),
         (
             "classifier",
             LogisticRegression(
@@ -131,16 +172,18 @@ def build_classifier():
     return model
 
 
-# Train once when the module is imported.
+# Train once when this module is imported.
 classifier = build_classifier()
 
 
 def suggest_category(description: str) -> dict:
-    """Return a category suggestion and a prototype review indicator."""
+    """Suggest an incident category and flag low-scoring predictions."""
     if not isinstance(description, str) or not description.strip():
         raise ValueError("Please enter an incident description.")
 
-    probabilities = classifier.predict_proba([description])[0]
+    cleaned_description = " ".join(description.split())
+
+    probabilities = classifier.predict_proba([cleaned_description])[0]
     best_index = probabilities.argmax()
     score = float(probabilities[best_index])
 
@@ -154,7 +197,8 @@ def suggest_category(description: str) -> dict:
 if __name__ == "__main__":
     examples = [
         "Several cars are backed up because a vehicle broke down",
-        "Water is leaking from a damaged pipe",
+        "car collison at Al Hisn",
+        "street light not working near Al Reem Island",
         "Smoke is coming from a building",
         "A visitor needs directions to a public office",
         "Fire at a shopping mall",
