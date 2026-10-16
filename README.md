@@ -6,6 +6,24 @@ DispatchDesk is a portfolio project that demonstrates incident management, resou
 
 > **Disclaimer:** DispatchDesk is a software prototype for demonstration and educational purposes. Its incidents, fleet units, and unit positions are simulated. It is not connected to real emergency services and must not be used for actual emergency response.
 
+
+
+## Screenshots
+
+### Main Dashboard
+![DispatchDesk main dashboard](Screenshots/Main.png)
+
+### Fleet Map
+![Interactive fleet map](Screenshots/Fleet%20Map.png)
+
+### Live Incidents Register
+![Live incidents register](Screenshots/Live%20Incidents%20Register.png)
+
+### Operational Analytics
+![Operational analytics](Screenshots/Operational%20Analytics%20chart.png)
+
+
+
 ## Features
 
 - **Incident management** — Create incidents, review reports, and update their lifecycle status.
