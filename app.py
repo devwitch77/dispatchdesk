@@ -220,10 +220,48 @@ st.caption(
     "Vehicle locations are simulated, not live emergency-service tracking."
 )
 
+
 show_resolved = st.checkbox(
     "Show resolved incidents",
     value=False,
+    key="map_show_resolved",
 )
+
+# Incident map filters
+priority_options = ["critical", "high", "medium", "low"]
+
+if not incidents_df.empty and "status" in incidents_df.columns:
+    status_options = sorted(
+        incidents_df["status"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .unique()
+    )
+else:
+    status_options = []
+
+filter_col1, filter_col2 = st.columns(2)
+
+with filter_col1:
+    selected_priorities = st.multiselect(
+        "Filter by priority",
+        options=priority_options,
+        default=priority_options,
+        format_func=str.title,
+        key="map_priority_filter",
+    )
+
+with filter_col2:
+    selected_statuses = st.multiselect(
+        "Filter by status",
+        options=status_options,
+        default=status_options,
+        format_func=lambda value: value.replace("_", " ").title(),
+        key="map_status_filter",
+    )
+
 
 # --------------------------------------------------
 # Prepare incident data
@@ -250,10 +288,20 @@ if not map_incidents.empty:
         map_incidents["priority"].astype(str).str.strip().str.lower()
     )
 
+
     if not show_resolved:
         map_incidents = map_incidents[
             map_incidents["status"] != "resolved"
         ].copy()
+
+    map_incidents = map_incidents[
+        map_incidents["priority"].isin(selected_priorities)
+    ].copy()
+
+    map_incidents = map_incidents[
+        map_incidents["status"].isin(selected_statuses)
+    ].copy()
+
 
 # --------------------------------------------------
 # Cluster incidents sharing nearby approximate
