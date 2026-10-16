@@ -1,6 +1,7 @@
 ﻿
 import streamlit as st
 import pandas as pd
+import pydeck as pdk
 
 
 from database import (
@@ -11,6 +12,7 @@ from database import (
     get_handover_incidents,
     assign_incident_resource,
     get_locations,
+    get_resources,
 )
 
 
@@ -204,6 +206,354 @@ st.info(
     "Prototype environment ready. All operational data is fictional."
 )
 
+
+
+
+
+# --------------------------------------------------
+# Interactive Abu Dhabi operations map
+# --------------------------------------------------
+
+st.header("Live Operations Map")
+st.caption(
+    "Incident and fleet positions use prototype data. "
+    "Vehicle locations are simulated, not live emergency-service tracking."
+)
+
+show_resolved = st.checkbox(
+    "Show resolved incidents",
+    value=False,
+)
+
+# --------------------------------------------------
+# Prepare incident data
+# --------------------------------------------------
+
+map_incidents = incidents_df.copy()
+
+if not map_incidents.empty:
+    map_incidents["latitude"] = pd.to_numeric(
+        map_incidents["latitude"], errors="coerce"
+    )
+    map_incidents["longitude"] = pd.to_numeric(
+        map_incidents["longitude"], errors="coerce"
+    )
+
+    map_incidents = map_incidents.dropna(
+        subset=["latitude", "longitude"]
+    ).copy()
+
+    map_incidents["status"] = (
+        map_incidents["status"].astype(str).str.strip().str.lower()
+    )
+    map_incidents["priority"] = (
+        map_incidents["priority"].astype(str).str.strip().str.lower()
+    )
+
+    if not show_resolved:
+        map_incidents = map_incidents[
+            map_incidents["status"] != "resolved"
+        ].copy()
+
+# --------------------------------------------------
+# Cluster incidents sharing nearby approximate
+# coordinates. Three decimal places groups points
+# into roughly 100-metre coordinate grid cells.
+# These are visual clusters, not exact addresses.
+# --------------------------------------------------
+
+map_clusters = []
+
+if not map_incidents.empty:
+    priority_colors = {
+        "critical": [220, 38, 38, 230],
+        "high": [234, 88, 12, 230],
+        "medium": [202, 138, 4, 230],
+        "low": [22, 163, 74, 230],
+    }
+
+    priority_order = ["critical", "high", "medium", "low"]
+
+    map_incidents["cluster_lat"] = (
+        map_incidents["latitude"].round(3)
+    )
+    map_incidents["cluster_lon"] = (
+        map_incidents["longitude"].round(3)
+    )
+
+    for (cluster_lat, cluster_lon), group in map_incidents.groupby(
+        ["cluster_lat", "cluster_lon"],
+        sort=False,
+    ):
+        incident_count = len(group)
+
+        # Use the most urgent active priority for the cluster colour.
+        present_priorities = set(group["priority"])
+        highest_priority = next(
+            (
+                priority
+                for priority in priority_order
+                if priority in present_priorities
+            ),
+            "low",
+        )
+
+        all_resolved = group["status"].eq("resolved").all()
+
+        marker_color = (
+            [107, 114, 128, 220]
+            if all_resolved
+            else priority_colors[highest_priority]
+        )
+
+        location_names = sorted(
+            group["location_label"].dropna().astype(str).unique()
+        )
+        location_text = (
+            ", ".join(location_names)
+            if location_names
+            else "Unknown location"
+        )
+
+        incident_summaries = [
+            f"#{row.incident_id} {row.title}"
+            for row in group.itertuples()
+        ]
+
+        # Keep the tooltip readable for larger clusters.
+        visible_summaries = incident_summaries[:4]
+        summary_text = "; ".join(visible_summaries)
+
+        if incident_count > 4:
+            summary_text += f"; and {incident_count - 4} more"
+
+        priority_counts = group["priority"].value_counts()
+        priority_text = ", ".join(
+            f"{priority.title()}: {priority_counts[priority]}"
+            for priority in priority_order
+            if priority in priority_counts.index
+        )
+
+        status_counts = group["status"].value_counts()
+        status_text = ", ".join(
+            f"{status.replace('_', ' ').title()}: {count}"
+            for status, count in status_counts.items()
+        )
+
+        map_clusters.append(
+            {
+                "latitude": float(group["latitude"].mean()),
+                "longitude": float(group["longitude"].mean()),
+                "incident_count": incident_count,
+                "marker_color": marker_color,
+                "marker_radius": min(
+                    150 + (incident_count - 1) * 35,
+                    500,
+                ),
+                "map_title": (
+                    f"{incident_count} incident(s) — {location_text}"
+                ),
+                "map_line_1": f"Reports: {summary_text}",
+                "map_line_2": f"Priority mix: {priority_text}",
+                "map_line_3": (
+                    f"Status: {status_text}. "
+                    "Approximate grouped coordinates."
+                ),
+            }
+        )
+
+cluster_df = pd.DataFrame(map_clusters)
+
+# --------------------------------------------------
+# Prepare simulated fleet data
+# --------------------------------------------------
+
+map_resources = pd.DataFrame(get_resources())
+
+if not map_resources.empty:
+    map_resources["latitude"] = pd.to_numeric(
+        map_resources["latitude"], errors="coerce"
+    )
+    map_resources["longitude"] = pd.to_numeric(
+        map_resources["longitude"], errors="coerce"
+    )
+
+    map_resources = map_resources.dropna(
+        subset=["latitude", "longitude"]
+    ).copy()
+
+    map_resources["map_title"] = (
+        map_resources["unit_code"].fillna("Unknown unit").astype(str)
+        + " — "
+        + map_resources["display_name"].fillna("Unnamed vehicle").astype(str)
+    )
+
+    map_resources["map_line_1"] = (
+        "Type: "
+        + map_resources["resource_type"].fillna("Unknown").astype(str)
+    )
+
+    map_resources["map_line_2"] = (
+        "Availability: "
+        + map_resources["availability_status"].fillna("Unknown").astype(str)
+    )
+
+    map_resources["map_line_3"] = (
+        "Position: Simulated coordinates, not live tracking."
+    )
+
+# --------------------------------------------------
+# Build map layers
+# --------------------------------------------------
+
+layers = []
+
+# Incident cluster circles
+if not cluster_df.empty:
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            id="incident-clusters",
+            data=cluster_df,
+            get_position="[longitude, latitude]",
+            get_fill_color="marker_color",
+            get_radius="marker_radius",
+            radius_min_pixels=12,
+            radius_max_pixels=28,
+            get_line_color=[255, 255, 255, 240],
+            line_width_min_pixels=2,
+            stroked=True,
+            filled=True,
+            pickable=True,
+            auto_highlight=True,
+        )
+    )
+
+    # Show the number of incidents in each cluster.
+    layers.append(
+        pdk.Layer(
+            "TextLayer",
+            id="incident-cluster-counts",
+            data=cluster_df,
+            get_position="[longitude, latitude]",
+            get_text="incident_count",
+            get_size=16,
+            size_units="pixels",
+            get_color=[255, 255, 255, 255],
+            get_angle=0,
+            get_pixel_offset=[0, 0],
+            pickable=False,
+        )
+    )
+
+# Simulated squad cars / fleet units
+if not map_resources.empty:
+    layers.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            id="simulated-fleet",
+            data=map_resources,
+            get_position="[longitude, latitude]",
+            get_fill_color=[14, 165, 233, 240],
+            get_radius=200,
+            radius_min_pixels=7,
+            radius_max_pixels=18,
+            get_line_color=[255, 255, 255, 240],
+            line_width_min_pixels=2,
+            stroked=True,
+            filled=True,
+            pickable=True,
+            auto_highlight=True,
+        )
+    )
+
+# Both layers use the same tooltip field names, but their
+# row data provides different incident or vehicle details.
+tooltip = {
+    "html": (
+        "<b>{map_title}</b>"
+        "<br/>{map_line_1}"
+        "<br/>{map_line_2}"
+        "<br/>{map_line_3}"
+    ),
+    "style": {
+        "backgroundColor": "#111827",
+        "color": "white",
+        "fontSize": "12px",
+        "padding": "10px",
+    },
+}
+
+# --------------------------------------------------
+# Render map
+# --------------------------------------------------
+
+if layers:
+    deck = pdk.Deck(
+        layers=layers,
+        initial_view_state=pdk.ViewState(
+            latitude=24.486,
+            longitude=54.375,
+            zoom=11.5,
+            pitch=0,
+            bearing=0,
+        ),
+        map_style=(
+            "https://basemaps.cartocdn.com/gl/"
+            "positron-gl-style/style.json"
+        ),
+        tooltip=tooltip,
+    )
+
+    st.pydeck_chart(
+        deck,
+        use_container_width=True,
+        height=600,
+    )
+else:
+    st.info(
+        "No incidents or simulated vehicles with valid coordinates."
+    )
+
+# --------------------------------------------------
+# Map legend and counts
+# --------------------------------------------------
+
+legend_col1, legend_col2 = st.columns(2)
+
+with legend_col1:
+    st.markdown(
+        "**Incident priority**  \n"
+        "🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low  \n"
+        "⚪ Grey · Resolved-only cluster"
+    )
+
+with legend_col2:
+    st.markdown(
+        "**Fleet**  \n"
+        "🔵 Blue markers · Simulated response vehicles"
+    )
+
+active_count = (
+    int((map_incidents["status"] != "resolved").sum())
+    if not map_incidents.empty
+    else 0
+)
+
+resolved_count_on_map = (
+    int((map_incidents["status"] == "resolved").sum())
+    if not map_incidents.empty
+    else 0
+)
+
+st.caption(
+    f"Incidents displayed: {len(map_incidents)} "
+    f"({active_count} active, {resolved_count_on_map} resolved) · "
+    f"Incident clusters: {len(cluster_df)} · "
+    f"Simulated fleet units displayed: {len(map_resources)}"
+)
+
+st.divider()
 
 # --------------------------------------------------
 # Summary metrics
