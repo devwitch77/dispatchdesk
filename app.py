@@ -74,6 +74,20 @@ def load_dashboard_data():
             """
         ).fetchall()
 
+
+	
+        daily_counts = connection.execute(
+            """
+            SELECT
+                date(created_at) AS incident_date,
+                COUNT(*) AS incident_count
+            FROM incidents
+            GROUP BY date(created_at)
+            ORDER BY incident_date
+            """
+        ).fetchall()
+
+
         
         incidents = connection.execute(
             """
@@ -126,6 +140,7 @@ def load_dashboard_data():
     activity_df = pd.DataFrame([dict(row) for row in activity])
     priority_df = pd.DataFrame([dict(row) for row in priority_counts])
     status_df = pd.DataFrame([dict(row) for row in status_counts])
+    daily_df = pd.DataFrame([dict(row) for row in daily_counts])
 
     return (
         open_incidents,
@@ -135,6 +150,7 @@ def load_dashboard_data():
         activity_df,
         priority_df,
         status_df,
+        daily_df,
     )
 
 (
@@ -145,6 +161,7 @@ def load_dashboard_data():
     activity_df,
     priority_df,
     status_df,
+    daily_df,
 ) = load_dashboard_data()
 
 
@@ -204,6 +221,32 @@ with chart_col2:
         st.bar_chart(status_chart["incident_count"])
     else:
         st.info("No incident data available yet.")
+
+
+st.subheader("Daily Incident Volume")
+
+if not daily_df.empty:
+    daily_chart = daily_df.copy()
+    daily_chart["incident_date"] = pd.to_datetime(
+        daily_chart["incident_date"]
+    )
+
+    daily_chart = daily_chart.set_index("incident_date")
+
+    st.line_chart(
+        daily_chart["incident_count"],
+        x_label="Date",
+        y_label="Incidents created",
+    )
+
+    if len(daily_chart) < 7:
+        st.caption(
+            "Limited history available. "
+            "The chart will become more useful as more incidents are recorded."
+        )
+else:
+    st.info("No incident history is available yet.")
+
 
 
 
