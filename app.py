@@ -601,7 +601,6 @@ with st.expander("↻ Update incident status", expanded=False):
                         f"An unexpected error occurred: {error}"
                     )
 
-
 # --------------------------------------------------
 # Assign a resource to an incident
 # --------------------------------------------------
@@ -610,10 +609,19 @@ with st.expander("👥 Assign a resource", expanded=False):
     with get_connection() as connection:
         assignable_incidents = connection.execute(
             """
-            SELECT incident_id, title, status
+            SELECT incident_id, title, status, priority, created_at
             FROM incidents
             WHERE status NOT IN ('resolved', 'cancelled')
-            ORDER BY incident_id DESC
+            ORDER BY
+                CASE LOWER(priority)
+                    WHEN 'critical' THEN 0
+                    WHEN 'high' THEN 1
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 3
+                    ELSE 4
+                END,
+                created_at ASC,
+                incident_id ASC
             """
         ).fetchall()
 
@@ -638,7 +646,8 @@ with st.expander("👥 Assign a resource", expanded=False):
     else:
         incident_lookup = {
             f"#{row['incident_id']} — {row['title']} "
-            f"[{row['status']}]": row["incident_id"]
+            f"[{row['priority'].upper()} | {row['status']}]":
+                row["incident_id"]
             for row in assignable_incidents
         }
 
@@ -666,27 +675,24 @@ with st.expander("👥 Assign a resource", expanded=False):
 
             if assignment_submitted:
                 try:
-                    assigned = assign_incident_resource(
+                    assign_incident_resource(
                         incident_lookup[selected_incident],
                         resource_lookup[selected_resource],
                     )
 
-                    if assigned:
-                        st.success("Resource assigned successfully.")
-                        st.rerun()
-                    else:
-                        st.info(
-                            "This resource is already assigned "
-                            "to that incident."
-                        )
+                    st.success(
+                        f"Resource assigned to {selected_incident}."
+                    )
+                    st.rerun()
 
                 except ValueError as error:
-                    st.error(f"Assignment failed: {error}")
+                    st.error(
+                        f"Could not assign resource: {error}"
+                    )
                 except Exception as error:
                     st.error(
                         f"An unexpected error occurred: {error}"
                     )
-
 
 # --------------------------------------------------
 # Incident register, search, and filters
@@ -847,16 +853,26 @@ if handover_df.empty:
 
 else:
     critical_count = int(
-        (handover_df["priority"] == "critical").sum()
+        (handover_df["priority"].str.lower() == "critical").sum()
     )
+
     high_count = int(
-        (handover_df["priority"] == "high").sum()
+        (handover_df["priority"].str.lower() == "high").sum()
     )
+
     in_progress_count = int(
-        (handover_df["status"] == "in_progress").sum()
+        (handover_df["status"].str.lower() == "in_progress").sum()
     )
+
     unassigned_count = int(
         handover_df["assigned_resource"].isna().sum()
+    )
+
+    unassigned_high_count = int(
+        (
+            (handover_df["priority"].str.lower() == "high")
+            & handover_df["assigned_resource"].isna()
+        ).sum()
     )
 
     st.markdown("### Handover summary")
@@ -879,6 +895,18 @@ else:
         f"{in_progress_count} incident(s) are currently in progress."
     )
 
+    if critical_count > 0:
+        st.error(
+            f"URGENT: {critical_count} unresolved critical "
+            "incident(s) require attention."
+        )
+
+    if unassigned_high_count > 0:
+        st.warning(
+            f"Action required: {unassigned_high_count} "
+            "unassigned high-priority incident(s)."
+        )
+
     report_df = handover_df.rename(
         columns={
             "incident_id": "Incident ID",
@@ -889,18 +917,17 @@ else:
             "location_label": "Location",
             "status": "Status",
             "created_at": "Created at (UTC)",
-            "updated_at": "Last updated (UTC)",
             "assigned_resource": "Assigned resource",
         }
     )
+
+    csv_data = report_df.to_csv(index=False).encode("utf-8")
 
     st.dataframe(
         report_df,
         use_container_width=True,
         hide_index=True,
     )
-
-    csv_data = report_df.to_csv(index=False).encode("utf-8-sig")
 
     st.download_button(
         label="Download handover report (CSV)",
@@ -909,7 +936,6 @@ else:
         mime="text/csv",
         type="primary",
     )
-
 
 # --------------------------------------------------
 # Footer
