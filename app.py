@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 
+
 from database import (
     get_connection,
     initialise_database,
@@ -9,7 +10,9 @@ from database import (
     update_incident_status,
     get_handover_incidents,
     assign_incident_resource,
+    get_locations,
 )
+
 
 
 # --------------------------------------------------
@@ -23,6 +26,18 @@ st.set_page_config(
 )
 
 initialise_database()
+
+LOCATIONS = get_locations()
+
+PRIORITY_ORDER_SQL = """
+    CASE LOWER(priority)
+        WHEN 'critical' THEN 0
+        WHEN 'high' THEN 1
+        WHEN 'medium' THEN 2
+        WHEN 'low' THEN 3
+        ELSE 4
+    END
+"""
 
 
 # --------------------------------------------------
@@ -80,15 +95,20 @@ def load_dashboard_data():
             """
         ).fetchall()
 
+        
+
         incidents = connection.execute(
             """
             SELECT
                 incident_id,
                 title,
+                description,
                 category,
                 priority,
                 status,
                 location_label,
+                latitude,
+                longitude,
                 assigned_resource_id,
                 created_at,
                 ROUND(
@@ -96,10 +116,20 @@ def load_dashboard_data():
                     1
                 ) AS age_hours
             FROM incidents
-            ORDER BY created_at DESC
-            LIMIT 10
+            ORDER BY
+                CASE LOWER(priority)
+                    WHEN 'critical' THEN 0
+                    WHEN 'high' THEN 1
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 3
+                    ELSE 4
+                END,
+                created_at ASC,
+                incident_id ASC
             """
         ).fetchall()
+
+
 
         activity = connection.execute(
             """
@@ -409,28 +439,52 @@ with st.expander("＋ Create a new incident", expanded=False):
                 index=1,
             )
 
+
         with form_col2:
-            location_label = st.selectbox(
-                "Fictional location",
-                [
-                    "Demo Zone A",
-                    "Demo Zone B",
-                    "Demo Zone C",
-                    "Demo Zone D",
-                    "Demo Zone E",
-                    "Demo Zone F",
-                ],
-            )
+            location_options = [
+                location["location_label"]
+                for location in LOCATIONS
+            ]
+
+            if not location_options:
+                st.error(
+                    "No locations are configured. "
+                    "Please initialise the database."
+                )
+                location_label = None
+            else:
+                location_label = st.selectbox(
+                    "Incident location",
+                    options=location_options,
+                    format_func=lambda label: (
+                        f"{label} — "
+                        + next(
+                            (
+                                location["area"]
+                                for location in LOCATIONS
+                                if location["location_label"] == label
+                            ),
+                            "Abu Dhabi",
+                        )
+                    ),
+                )
+
 
         submitted = st.form_submit_button(
             "Create incident",
             type="primary",
         )
 
+
         if submitted:
-            if not title.strip() or not description.strip():
+            if (
+                not title.strip()
+                or not description.strip()
+                or not location_label
+            ):
                 st.error(
-                    "Please enter both a title and a description."
+                    "Please enter both a title and a description, "
+                    "and select a location."
                 )
             else:
                 try:
@@ -466,6 +520,8 @@ with st.expander("＋ Create a new incident", expanded=False):
                     )
 
 
+
+
 # --------------------------------------------------
 # Update incident status
 # --------------------------------------------------
@@ -474,9 +530,18 @@ with st.expander("↻ Update incident status", expanded=False):
     with get_connection() as connection:
         status_options = connection.execute(
             """
-            SELECT incident_id, title, status
+            SELECT incident_id, title, status, priority, created_at
             FROM incidents
-            ORDER BY incident_id DESC
+            ORDER BY
+                CASE LOWER(priority)
+                    WHEN 'critical' THEN 0
+                    WHEN 'high' THEN 1
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 3
+                    ELSE 4
+                END,
+                created_at ASC,
+                incident_id ASC
             """
         ).fetchall()
 
@@ -485,8 +550,8 @@ with st.expander("↻ Update incident status", expanded=False):
     else:
         incident_lookup = {
             f"#{row['incident_id']} — "
-            f"{row['title']} [{row['status']}]":
-                row["incident_id"]
+            f"{row['title']} [{row['priority'].upper()} | "
+            f"{row['status']}]": row["incident_id"]
             for row in status_options
         }
 
@@ -500,6 +565,7 @@ with st.expander("↻ Update incident status", expanded=False):
                 "New status",
                 [
                     "new",
+                    "assigned",
                     "in_progress",
                     "resolved",
                     "cancelled",
@@ -726,7 +792,6 @@ else:
 # Recent activity / audit trail
 # --------------------------------------------------
 
-st.divider()
 st.subheader("Recent activity")
 st.caption(
     "Latest events recorded in the fictional demo database."
