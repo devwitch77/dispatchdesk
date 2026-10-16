@@ -650,6 +650,20 @@ else:
 # --------------------------------------------------
 
 with st.expander("＋ Create a new incident", expanded=False):
+
+        # Clear the previous incident only after a successful submission.
+    if st.session_state.pop("_reset_new_incident_form", False):
+        st.session_state["new_incident_title"] = ""
+        st.session_state["new_incident_description"] = ""
+        st.session_state["new_incident_category"] = "Traffic"
+
+        for key in (
+            "incident_category_suggestion",
+            "incident_category_confidence",
+            "incident_category_needs_review",
+            "incident_category_suggestion_for",
+        ):
+            st.session_state.pop(key, None)
     st.write("Enter the details of a fictional incident.")
 
     title = st.text_input(
@@ -858,6 +872,8 @@ with st.expander("＋ Create a new incident", expanded=False):
                         "new_incident_category",
                         None,
                     )
+
+                    st.session_state["_reset_new_incident_form"] = True
 
                     st.success(
                         f"Incident #{new_id} created successfully."
