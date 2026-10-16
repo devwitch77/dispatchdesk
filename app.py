@@ -420,7 +420,23 @@ cluster_df = pd.DataFrame(map_clusters)
 # Prepare simulated fleet data
 # --------------------------------------------------
 
+
+# Fleet availability filter
+fleet_status_options = ["available", "assigned", "unavailable"]
+
+fleet_filter_col, fleet_count_col = st.columns(2)
+
+with fleet_filter_col:
+    selected_fleet_statuses = st.multiselect(
+        "Filter fleet by availability",
+        options=fleet_status_options,
+        default=fleet_status_options,
+        format_func=str.title,
+        key="map_fleet_status_filter",
+    )
+
 map_resources = pd.DataFrame(get_resources())
+
 
 if not map_resources.empty:
     map_resources["latitude"] = pd.to_numeric(
@@ -433,6 +449,25 @@ if not map_resources.empty:
     map_resources = map_resources.dropna(
         subset=["latitude", "longitude"]
     ).copy()
+
+
+
+    map_resources["availability_status"] = (
+        map_resources["availability_status"]
+        .fillna("unknown")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    map_resources = map_resources[
+        map_resources["availability_status"].isin(
+            selected_fleet_statuses
+        )
+    ].copy()
+
+
+
 
     map_resources["map_title"] = (
         map_resources["unit_code"].fillna("Unknown unit").astype(str)
