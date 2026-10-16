@@ -2,7 +2,6 @@
 import streamlit as st
 import pandas as pd
 
-
 from database import (
     get_connection,
     initialise_database,
@@ -13,9 +12,8 @@ from database import (
 )
 
 
-
 # --------------------------------------------------
-# Page configuration
+# Page configuration and initialization
 # --------------------------------------------------
 
 st.set_page_config(
@@ -24,15 +22,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# Ensure the database tables exist before querying them.
 initialise_database()
 
 
 # --------------------------------------------------
 # Data loading
 # --------------------------------------------------
-
-
 
 def load_dashboard_data():
     with get_connection() as connection:
@@ -74,8 +69,6 @@ def load_dashboard_data():
             """
         ).fetchall()
 
-
-	
         daily_counts = connection.execute(
             """
             SELECT
@@ -87,8 +80,6 @@ def load_dashboard_data():
             """
         ).fetchall()
 
-
-        
         incidents = connection.execute(
             """
             SELECT
@@ -110,28 +101,34 @@ def load_dashboard_data():
             """
         ).fetchall()
 
-
         activity = connection.execute(
             """
-            SELECT audit_events.event_id,
-                   audit_events.incident_id,
-                   audit_events.event_type,
-                   audit_events.old_value,
-                   audit_events.new_value,
-                   audit_events.event_at,
-                   CASE
-                       WHEN audit_events.event_type IN (
-                           'resource_assigned', 'resource_released'
-                       )
-                       THEN audit_events.new_value
-                       ELSE COALESCE(resources.display_name, 'Unassigned')
-                   END AS assigned_resource
+            SELECT
+                audit_events.event_id,
+                audit_events.incident_id,
+                audit_events.event_type,
+                audit_events.old_value,
+                audit_events.new_value,
+                audit_events.event_at,
+                CASE
+                    WHEN audit_events.event_type IN (
+                        'resource_assigned',
+                        'resource_released'
+                    )
+                    THEN audit_events.new_value
+                    ELSE COALESCE(
+                        resources.display_name,
+                        'Unassigned'
+                    )
+                END AS assigned_resource
             FROM audit_events
             LEFT JOIN incidents
                 ON audit_events.incident_id = incidents.incident_id
             LEFT JOIN resources
                 ON incidents.assigned_resource_id = resources.resource_id
-            ORDER BY audit_events.event_at DESC, audit_events.event_id DESC
+            ORDER BY
+                audit_events.event_at DESC,
+                audit_events.event_id DESC
             LIMIT 10
             """
         ).fetchall()
@@ -153,6 +150,7 @@ def load_dashboard_data():
         daily_df,
     )
 
+
 (
     open_count,
     assigned_count,
@@ -165,7 +163,6 @@ def load_dashboard_data():
 ) = load_dashboard_data()
 
 
-
 # --------------------------------------------------
 # Dashboard header
 # --------------------------------------------------
@@ -174,8 +171,7 @@ st.title("DispatchDesk")
 st.caption("Incident Coordination & Operations Dashboard")
 
 st.info(
-    "Prototype environment ready. "
-    "All operational data is fictional."
+    "Prototype environment ready. All operational data is fictional."
 )
 
 
@@ -199,7 +195,10 @@ with col3:
 st.divider()
 
 
+# --------------------------------------------------
 # Operational analytics
+# --------------------------------------------------
+
 st.header("Operational Analytics")
 
 chart_col1, chart_col2 = st.columns(2)
@@ -208,8 +207,9 @@ with chart_col1:
     st.subheader("Incidents by Priority")
 
     if not priority_df.empty:
-        priority_chart = priority_df.set_index("priority")
-        st.bar_chart(priority_chart["incident_count"])
+        st.bar_chart(
+            priority_df.set_index("priority")["incident_count"]
+        )
     else:
         st.info("No incident data available yet.")
 
@@ -217,11 +217,11 @@ with chart_col2:
     st.subheader("Incidents by Status")
 
     if not status_df.empty:
-        status_chart = status_df.set_index("status")
-        st.bar_chart(status_chart["incident_count"])
+        st.bar_chart(
+            status_df.set_index("status")["incident_count"]
+        )
     else:
         st.info("No incident data available yet.")
-
 
 st.subheader("Daily Incident Volume")
 
@@ -230,56 +230,177 @@ if not daily_df.empty:
     daily_chart["incident_date"] = pd.to_datetime(
         daily_chart["incident_date"]
     )
-
     daily_chart = daily_chart.set_index("incident_date")
+    daily_chart = daily_chart[["incident_count"]]
+
+    today_utc = (
+        pd.Timestamp.now(tz="UTC")
+        .normalize()
+        .tz_localize(None)
+    )
+
+    last_seven_days = pd.date_range(
+        end=today_utc,
+        periods=7,
+        freq="D",
+    )
+
+    daily_chart = daily_chart.reindex(
+        last_seven_days,
+        fill_value=0,
+    )
+    daily_chart.index.name = "Date"
 
     st.line_chart(
         daily_chart["incident_count"],
-        x_label="Date",
+        x_label="Date (UTC)",
         y_label="Incidents created",
     )
 
-    if len(daily_chart) < 7:
-        st.caption(
-            "Limited history available. "
-            "The chart will become more useful as more incidents are recorded."
-        )
+    st.caption(
+        "Daily incident counts for the last seven UTC calendar days. "
+        "Missing dates are shown as zero."
+    )
 else:
     st.info("No incident history is available yet.")
 
 
-
-
 # --------------------------------------------------
-# Create an incident
+# Create an incident with NLP assistance
 # --------------------------------------------------
 
 with st.expander("＋ Create a new incident", expanded=False):
     st.write("Enter the details of a fictional incident.")
 
-    with st.form("create_incident_form", clear_on_submit=True):
-        title = st.text_input(
-            "Incident title",
-            max_chars=120,
+    title = st.text_input(
+        "Incident title",
+        max_chars=120,
+        key="new_incident_title",
+    )
+
+    description = st.text_area(
+        "Description",
+        max_chars=1000,
+        key="new_incident_description",
+        help="Describe the fictional incident in ordinary language.",
+    )
+
+    # The description associated with a suggestion is tracked so an old
+    # suggestion is not silently treated as a prediction for new text.
+    if st.button(
+        "Suggest category with NLP",
+        key="suggest_incident_category",
+    ):
+        if not description.strip():
+            st.warning(
+                "Enter a description before requesting a suggestion."
+            )
+        else:
+            try:
+                from incident_classifier import suggest_category
+
+                suggestion = suggest_category(description.strip())
+
+                st.session_state["incident_category_suggestion"] = (
+                    suggestion["category"]
+                )
+                st.session_state["incident_category_confidence"] = (
+                    suggestion["confidence"]
+                )
+                st.session_state["incident_category_needs_review"] = (
+                    suggestion["needs_review"]
+                )
+                st.session_state["incident_category_suggestion_for"] = (
+                    description.strip()
+                )
+
+                # Update the category widget before it is rendered
+                # on this rerun.
+                st.session_state["new_incident_category"] = (
+                    suggestion["category"]
+                )
+
+            except Exception as error:
+                st.error(
+                    f"Could not generate a suggestion: {error}"
+                )
+
+    suggestion_exists = (
+        "incident_category_suggestion" in st.session_state
+    )
+
+    suggestion_matches_description = (
+        suggestion_exists
+        and st.session_state.get("incident_category_suggestion_for")
+        == description.strip()
+        and bool(description.strip())
+    )
+
+    if suggestion_matches_description:
+        suggested_category = st.session_state[
+            "incident_category_suggestion"
+        ]
+        confidence = st.session_state[
+            "incident_category_confidence"
+        ]
+        needs_review = st.session_state.get(
+            "incident_category_needs_review",
+            confidence < 0.45,
         )
 
-        description = st.text_area(
-            "Description",
-            max_chars=1000,
+        st.info(
+            f"NLP suggestion: {suggested_category} "
+            f"(model score: {confidence:.1%})"
         )
+
+        if needs_review:
+            st.warning(
+                "Low model score. Review the description carefully "
+                "and choose the category manually if needed."
+            )
+        else:
+            st.success(
+                "The suggestion passed the prototype score threshold. "
+                "Verify the category before submitting."
+            )
+
+        st.caption(
+            "Experimental classifier trained on fictional data. "
+            "The model score is not a calibrated probability of correctness. "
+            "It does not determine priority or trigger dispatch."
+        )
+
+    elif suggestion_exists and description.strip():
+        st.warning(
+            "The description has changed since the last suggestion. "
+            "Generate a new suggestion before relying on the NLP result."
+        )
+
+    with st.form("create_incident_form", clear_on_submit=True):
+        category_options = [
+            "Traffic",
+            "Infrastructure",
+            "Public Assistance",
+            "Public Safety",
+            "Other",
+        ]
+
+        current_category = st.session_state.get(
+            "new_incident_category",
+            "Traffic",
+        )
+
+        if current_category not in category_options:
+            current_category = "Traffic"
 
         form_col1, form_col2 = st.columns(2)
 
         with form_col1:
             category = st.selectbox(
-                "Category",
-                [
-                    "Traffic",
-                    "Infrastructure",
-                    "Public Assistance",
-                    "Public Safety",
-                    "Other",
-                ],
+                "Confirm incident category",
+                category_options,
+                index=category_options.index(current_category),
+                key="new_incident_category",
             )
 
             priority = st.selectbox(
@@ -314,11 +435,24 @@ with st.expander("＋ Create a new incident", expanded=False):
             else:
                 try:
                     new_id = create_incident(
-                        title=title,
-                        description=description,
+                        title=title.strip(),
+                        description=description.strip(),
                         category=category,
                         priority=priority,
                         location_label=location_label,
+                    )
+
+                    for key in (
+                        "incident_category_suggestion",
+                        "incident_category_confidence",
+                        "incident_category_needs_review",
+                        "incident_category_suggestion_for",
+                    ):
+                        st.session_state.pop(key, None)
+
+                    st.session_state.pop(
+                        "new_incident_category",
+                        None,
                     )
 
                     st.success(
@@ -347,10 +481,7 @@ with st.expander("↻ Update incident status", expanded=False):
         ).fetchall()
 
     if not status_options:
-        st.info(
-            "Create an incident before updating its status."
-        )
-
+        st.info("Create an incident before updating its status.")
     else:
         incident_lookup = {
             f"#{row['incident_id']} — "
@@ -399,13 +530,10 @@ with st.expander("↻ Update incident status", expanded=False):
                     st.error(
                         f"Could not update incident: {error}"
                     )
-
                 except Exception as error:
                     st.error(
                         f"An unexpected error occurred: {error}"
                     )
-
-
 
 
 # --------------------------------------------------
@@ -488,14 +616,10 @@ with st.expander("👥 Assign a resource", expanded=False):
 
                 except ValueError as error:
                     st.error(f"Assignment failed: {error}")
-
                 except Exception as error:
                     st.error(
                         f"An unexpected error occurred: {error}"
                     )
-
-
-
 
 
 # --------------------------------------------------
@@ -509,9 +633,7 @@ if incidents_df.empty:
     st.info("No incidents have been recorded yet.")
 
 else:
-    search_col, priority_col, status_col = st.columns(
-        [2, 1, 1]
-    )
+    search_col, priority_col, status_col = st.columns([2, 1, 1])
 
     with search_col:
         search_text = st.text_input(
@@ -538,7 +660,6 @@ else:
             ],
         )
 
-    # Work on a copy so the original data remains unchanged.
     filtered_df = incidents_df.copy()
 
     if search_text:
@@ -556,32 +677,23 @@ else:
                 regex=False,
             )
         )
-
         filtered_df = filtered_df[search_mask]
 
     if selected_priority != "All":
         filtered_df = filtered_df[
-            filtered_df["priority"]
-            == selected_priority.lower()
+            filtered_df["priority"] == selected_priority.lower()
         ]
 
     if selected_status != "All":
-        status_value = selected_status.lower().replace(
-            " ",
-            "_",
-        )
-
+        status_value = selected_status.lower().replace(" ", "_")
         filtered_df = filtered_df[
             filtered_df["status"] == status_value
         ]
 
     st.caption(
-        f"Showing {len(filtered_df)} of "
-        f"{len(incidents_df)} incidents"
+        f"Showing {len(filtered_df)} of {len(incidents_df)} incidents"
     )
 
-
-    # Convert incident age into a readable label and demo indicator.
     if "age_hours" in filtered_df.columns:
         filtered_df["Age"] = filtered_df["age_hours"].apply(
             lambda hours: (
@@ -591,7 +703,7 @@ else:
             )
         )
 
-        filtered_df["Status"] = filtered_df["age_hours"].apply(
+        filtered_df["Age indicator"] = filtered_df["age_hours"].apply(
             lambda hours: (
                 "🔴 Long open"
                 if hours >= 4
@@ -601,16 +713,13 @@ else:
             )
         )
 
-        # Remove the raw numeric age from the displayed table.
         filtered_df = filtered_df.drop(columns=["age_hours"])
-
 
     st.dataframe(
         filtered_df,
         use_container_width=True,
         hide_index=True,
     )
-
 
 
 # --------------------------------------------------
@@ -620,14 +729,12 @@ else:
 st.divider()
 st.subheader("Recent activity")
 st.caption(
-    "Latest status changes recorded in the fictional demo database."
+    "Latest events recorded in the fictional demo database."
 )
 
 if activity_df.empty:
     st.info("No activity has been recorded yet.")
-
 else:
-    # Make event names easier to read.
     display_activity = activity_df.copy()
 
     display_activity["event_type"] = (
@@ -640,26 +747,19 @@ else:
         columns={
             "event_id": "Event ID",
             "incident_id": "Incident ID",
-            "title": "Incident",
             "event_type": "Event",
-            "old_value": "Previous status",
-            "new_value": "New status",
+            "old_value": "Previous value",
+            "new_value": "New value",
             "event_at": "Recorded at (UTC)",
+            "assigned_resource": "Resource",
         }
     )
 
-    # Present the newest activity first.
     st.dataframe(
         display_activity,
         use_container_width=True,
         hide_index=True,
     )
-
-
-# --------------------------------------------------
-# Footer
-# --------------------------------------------------
-
 
 
 # --------------------------------------------------
@@ -681,7 +781,6 @@ if handover_df.empty:
     st.success("No outstanding incidents. Handover is clear.")
 
 else:
-    # Summary metrics
     critical_count = int(
         (handover_df["priority"] == "critical").sum()
     )
@@ -715,7 +814,6 @@ else:
         f"{in_progress_count} incident(s) are currently in progress."
     )
 
-    # Prepare a readable report table.
     report_df = handover_df.rename(
         columns={
             "incident_id": "Incident ID",
@@ -737,7 +835,6 @@ else:
         hide_index=True,
     )
 
-    # Download the report as a CSV file.
     csv_data = report_df.to_csv(index=False).encode("utf-8-sig")
 
     st.download_button(
@@ -748,6 +845,10 @@ else:
         type="primary",
     )
 
+
+# --------------------------------------------------
+# Footer
+# --------------------------------------------------
 
 st.divider()
 st.caption("DispatchDesk · Development prototype")
